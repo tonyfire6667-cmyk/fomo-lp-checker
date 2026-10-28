@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FOMO LP 价值查询</title>
+<style>
+:root{--bg:#f4f6f7;--card:#fff;--ink:#14232b;--mute:#5d6f78;--line:#d5dde1;--acc:#0a6e6e;--acc-ink:#fff;--err:#b3261e}
+@media (prefers-color-scheme:dark){:root{--bg:#10181c;--card:#18242a;--ink:#e6eef1;--mute:#93a6af;--line:#2b3b43;--acc:#3fb5b0;--acc-ink:#07201f;--err:#ff8a80}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+main{max-width:560px;margin:0 auto;padding:36px 16px 64px}
+h1{font-size:1.6rem;margin:0 0 4px}
+h2{font-size:1rem;margin:0 0 10px}
+.sub{color:var(--mute);margin:0 0 24px;font-size:.92rem}
+label{display:block;margin:0 0 14px;font-weight:600;font-size:.9rem}
+input{display:block;width:100%;margin-top:6px;padding:12px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink);font:inherit;font-weight:400}
+input:focus-visible,button:focus-visible,summary:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+button{width:100%;padding:13px;border:0;border-radius:6px;background:var(--acc);color:var(--acc-ink);font:inherit;font-weight:700;cursor:pointer}
+button:disabled{opacity:.6;cursor:wait}
+.res{margin-top:24px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:18px;margin-bottom:16px}
+.hero .lbl{color:var(--mute);font-size:.85rem;margin:0}
+.hero .big{font-size:2.2rem;font-weight:700;margin:0 0 2px;line-height:1.2}
+.hero .hint{color:var(--mute);font-size:.82rem;margin:0 0 10px}
+.row{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-top:1px solid var(--line);font-size:.93rem}
+.row span:first-child{color:var(--mute);flex:none}
+.row span:last-child{text-align:right;word-break:break-all}
+.err{color:var(--err)}
+.msg{margin:0;color:var(--mute)}
+.note{color:var(--mute);font-size:.82rem;margin:14px 0 0}
+details{color:var(--mute);font-size:.85rem;margin-top:8px}
+summary{cursor:pointer}
+details p{margin:8px 0 0;word-break:break-all}
+</style>
+</head>
+<body>
+<main>
+<h1>FOMO LP 价值查询</h1>
+<p class="sub">输入钱包地址，查看你持有的 FOMO-LP 数量和估算价值。数据直接读取自 BSC 链，无需连接钱包。</p>
+
+<label>钱包地址
+<input id="w" placeholder="0x…" autocomplete="off" spellcheck="false">
+</label>
+<button id="go">查询</button>
+
+<div class="res" id="out" aria-live="polite"></div>
+
+<details>
+<summary>查询不出来？（可选：自定义节点）</summary>
+<label style="margin-top:10px">自定义 BSC 节点 RPC 地址
+<input id="rpc" placeholder="https://…" autocomplete="off" spellcheck="false">
+</label>
+<p>默认使用公共节点，访问人多或网络受限时可能连不上，可以在这里填入你自己的 RPC 地址。</p>
+</details>
+
+<details>
+<summary>合约信息</summary>
+<p>FOMO 代币：<span id="a1"></span></p>
+<p>FOMO / WBNB 交易对：<span id="a2"></span></p>
+<p>FOMO-LP 合约：<span id="a3"></span></p>
+</details>
+
+<p class="note">本页是社区查询工具，不是项目官方页面。显示的数字是按链上数据和公开合约规则算出的估算，不等于一定能取回的金额，也不构成任何投资建议。实际赎回和卖出以合约执行结果为准，价格波动、滑点和手续费都会影响到手金额。请不要在任何网站输入私钥或助记词。</p>
+</main>
+
+<script>
+const TOKEN = '0xfd1584c01d738482263371e96f89ee7dad557777';
+const PAIR = '0x2d2d20c3bf2b404e507b08fd9b253786873ed071';
+const MINER = '0xbeabd6d616a357808bcd83998b8b843775b6e06d';
+const FACTORY = '0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73';
+const WBNB = '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c';
+const USDT = '0x55d398326f99059ff775485246999027b3197955';
+const RPCS = ['https://bsc-rpc.publicnode.com', 'https://bsc-dataseed.binance.org', 'https://bsc-dataseed1.defibit.io', 'https://bsc-dataseed2.binance.org', 'https://bsc.drpc.org', 'https://1rpc.io/bnb', 'https://binance.llamarpc.com'];
+
+const $ = id => document.getElementById(id);
+$('a1').textContent = TOKEN; $('a2').textContent = PAIR; $('a3').textContent = MINER;
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const isAddr = a => /^0x[0-9a-fA-F]{40}$/.test(a);
+const pad = a => a.toLowerCase().replace('0x', '').padStart(64, '0');
+const words = h => (h && h.slice(2).match(/.{64}/g)) || [];
+const big = w => BigInt('0x' + w);
+const addrOf = w => '0x' + w.slice(24);
+const num = (v, d) => Number(v) / 10 ** d;
+const fmt = n => n == null ? '—' : n.toLocaleString('en-US', {maximumFractionDigits: Math.abs(n) < 1 ? 8 : 4});
+const usd = n => n == null ? '—' : '$' + n.toLocaleString('en-US', {maximumFractionDigits: 2});
+const usdp = n => n == null ? '—' : '$' + n.toLocaleString('en-US', {maximumSignificantDigits: 6});
+
+function keccak256(str){
+  const M=(1n<<64n)-1n;
+  const rol=(x,n)=>{n=BigInt(n%64);return n===0n?x:((x<<n)|(x>>(64n-n)))&M;};
+  const f=L=>{
+    let R=1;
+    for(let r=0;r<24;r++){
+      const C=[0,1,2,3,4].map(x=>L[x][0]^L[x][1]^L[x][2]^L[x][3]^L[x][4]);
+      const D=[0,1,2,3,4].map(x=>C[(x+4)%5]^rol(C[(x+1)%5],1));
+      for(let x=0;x<5;x++)for(let y=0;y<5;y++)L[x][y]^=D[x];
+      let x=1,y=0,cur=L[x][y];
+      for(let t=0;t<24;t++){
+        const nx=y,ny=(2*x+3*y)%5;x=nx;y=ny;
+        const tmp=L[x][y];L[x][y]=rol(cur,((t+1)*(t+2))/2);cur=tmp;
+      }
+      for(let yy=0;yy<5;yy++){
+        const T=[0,1,2,3,4].map(xx=>L[xx][yy]);
+        for(let xx=0;xx<5;xx++)L[xx][yy]=T[xx]^((~T[(xx+1)%5]&M)&T[(xx+2)%5]);
+      }
+      for(let j=0;j<7;j++){
+        R=((R<<1)^((R>>7)*0x71))%256;
+        if(R&2)L[0][0]^=1n<<BigInt((1<<j)-1);
+      }
+    }
+  };
+  const bytes=Array.from(new TextEncoder().encode(str));
+  const rate=136;
+  bytes.push(0x01);
+  while(bytes.length%rate)bytes.push(0);
+  bytes[bytes.length-1]|=0x80;
+  const L=Array.from({length:5},()=>Array(5).fill(0n));
+  for(let off=0;off<bytes.length;off+=rate){
+    for(let i=0;i<rate/8;i++){
+      let v=0n;
+      for(let b=7;b>=0;b--)v=(v<<8n)|BigInt(bytes[off+i*8+b]);
+      L[i%5][Math.floor(i/5)]^=v;
+    }
+    f(L);
+  }
+  let out='';
+  for(let i=0;i<4;i++){
+    let v=L[i%5][Math.floor(i/5)];
+    for(let b=0;b<8;b++){out+=(Number(v&0xffn)).toString(16).padStart(2,'0');v>>=8n;}
+  }
+  return out;
+}
+
+const sel = sig => '0x' + keccak256(sig).slice(0, 8);
+
+// ---------- RPC ----------
+const bad = new Set();
+function rpcList() {
+  const custom = $('rpc').value.trim();
+  let l = (custom ? [custom] : []).concat(RPCS).filter(u => !bad.has(u));
+  if (!l.length) { bad.clear(); l = (custom ? [custom] : []).concat(RPCS); }
+  return l;
+}
+async function rpc(method, params) {
+  let last;
+  for (const u of rpcList()) {
+    let timer;
+    try {
+      const timeout = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('超时')), 8000); });
+      const req = fetch(u, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({jsonrpc: '2.0', id: 1, method, params})
+      }).then(r => r.json());
+      const j = await Promise.race([req, timeout]);
+      if (j.error) {
+        if (/revert|execution|invalid opcode|out of gas|invalid/i.test(j.error.message || '')) return {err: j.error.message};
+        throw new Error(j.error.message);
+      }
+      return {result: j.result};
+    } catch (e) {
+      bad.add(u);
+      last = new Error('节点连接失败（' + e.message + '）');
+    } finally { clearTimeout(timer); }
+  }
+  throw last;
+}
+async function ethCall(to, data) {
+  const r = await rpc('eth_call', [{to, data}, 'latest']);
+  return (r.err || !r.result || r.result === '0x') ? null : r.result;
+}
+const rdN = async (c, data) => { const r = await ethCall(c, data); return r ? big(words(r)[0]) : null; };
+const bal = async (c, w) => (await rdN(c, '0x70a08231' + pad(w))) ?? 0n;
+
+function decodeStr(h) {
+  try {
+    const x = h.slice(2);
+    const b = x.length === 64 ? x : x.slice(128, 128 + parseInt(x.slice(64, 128), 16) * 2);
+    return new TextDecoder().decode(new Uint8Array(b.match(/../g).map(v => parseInt(v, 16)))).replace(/\0/g, '');
+  } catch { return '?'; }
+}
+const cache = {};
+async function tinfo(a) {
+  a = a.toLowerCase();
+  if (cache[a]) return cache[a];
+  const d = await ethCall(a, '0x313ce567');
+  const s = await ethCall(a, '0x95d89b41');
+  return cache[a] = {dec: d ? Number(big(words(d)[0])) : 18, sym: s ? decodeStr(s) : a.slice(0, 6) + '…'};
+}
+async function getPair(a, b) {
+  const r = await ethCall(FACTORY, '0xe6a43905' + pad(a) + pad(b));
+  if (!r) return null;
+  const p = addrOf(words(r)[0]);
+  return /^0x0+$/.test(p) ? null : p;
+}
+async function pairData(p) {
+  const [a, b, r, s] = await Promise.all([
+    ethCall(p, '0x0dfe1681'), ethCall(p, '0xd21220a7'), ethCall(p, '0x0902f1ac'), ethCall(p, '0x18160ddd')
+  ]);
+  if (!a || !b || !r || !s) throw new Error('交易对数据读取失败');
+  const t0 = addrOf(words(a)[0]), t1 = addrOf(words(b)[0]), rw = words(r);
+  const [i0, i1] = await Promise.all([tinfo(t0), tinfo(t1)]);
+  return {
+    t: [{a: t0, ...i0, r: num(big(rw[0]), i0.dec)}, {a: t1, ...i1, r: num(big(rw[1]), i1.dec)}],
+    ts: big(words(s)[0])
+  };
+}
+async function bnbPrice() {
+  const p = await getPair(WBNB, USDT);
+  if (!p) return null;
+  const d = await pairData(p);
+  const w = d.t.find(x => x.a === WBNB), u = d.t.find(x => x.a !== WBNB);
+  return u.r / w.r;
+}
+
+// ---------- 主查询 ----------
+$('go').onclick = async () => {
+  const w = $('w').value.trim(), out = $('out'), btn = $('go');
+  if (!isAddr(w)) { out.innerHTML = '<p class="err">请输入有效的钱包地址（0x 开头，共 42 位）。</p>'; return; }
+  btn.disabled = true; out.textContent = '查询中，请稍候…';
+  try {
+    const bnb = await bnbPrice().catch(() => null);
+    const d = await pairData(PAIR);
+    const f = d.t.find(x => x.a === TOKEN.toLowerCase()), wb = d.t.find(x => x.a === WBNB);
+    if (!f || !wb) throw new Error('池子数据异常');
+    const tvl = bnb != null ? 2 * wb.r * bnb : null;
+    const fomoUsd = bnb != null ? wb.r * bnb / f.r : null;
+    const lpSupply = num(d.ts, 18);
+    const perLp = tvl != null && lpSupply > 0 ? tvl / lpSupply : null;
+
+    const [mTs, mBal, lpHeld] = await Promise.all([
+      rdN(MINER, '0x18160ddd'), rdN(MINER, '0x70a08231' + pad(w)), bal(PAIR, MINER)
+    ]);
+    if (mTs == null) throw new Error('FOMO-LP 数据读取失败');
+    const mine = mBal ?? 0n;
+
+    const pool = `<section class="card"><h2>池子概况</h2>
+      <div class="row"><span>FOMO 价格</span><span>${usdp(fomoUsd)}</span></div>
+      <div class="row"><span>BNB 价格</span><span>${usdp(bnb)}</span></div>
+      <div class="row"><span>池子总流动性</span><span>${usd(tvl)}</span></div></section>`;
+
+    if (mine === 0n) {
+      out.innerHTML = `<section class="card"><p class="msg">这个地址目前没有持有 FOMO-LP。请确认填写的是参与时使用的钱包地址。</p></section>` + pool;
+      return;
+    }
+
+    const dec = 18;
+    const share = mTs > 0n ? Number(mine * 10n ** 18n / mTs) / 1e18 : 0;
+    const lpShare = share * num(lpHeld, 18);
+    const pf = lpSupply > 0 ? lpShare / lpSupply : 0;
+    const sideB = pf * wb.r, sideF = pf * f.r;
+    const value = perLp != null ? lpShare * perLp : null;
+
+    // 待领取的挖矿收益
+    const mcR = await ethCall(MINER, '0xe73eee1d');
+    const mc = mcR ? addrOf(words(mcR)[0]) : null;
+    const earn = mc && !/^0x0+$/.test(mc) ? await rdN(mc, sel('lpEarn(uint256,address)') + pad('0x0') + pad(w)) : null;
+    const earnN = earn != null ? num(earn, f.dec) : null;
+    const earnUsd = earnN != null && fomoUsd != null ? earnN * fomoUsd : null;
+
+    // 公开的卖出规则
+    const [tf, hst, hsb, fee14] = await Promise.all([
+      rdN(TOKEN, sel('_transferFee()')), rdN(TOKEN, sel('highSellTaxActive()')),
+      rdN(TOKEN, sel('highSellTaxBps()')), rdN(MINER, '0xc37faac0')
+    ]);
+    const tfN = tf != null ? Number(tf) / 10000 : null;
+    const hsN = hsb != null ? Number(hsb) / 10000 : 0;
+    const keep = tfN != null ? Math.max(0, 1 - tfN - (hst === 1n ? hsN : 0)) : null;
+    const feeN = fee14 != null ? Number(fee14) / 10000 : 0;
+    const bnbUsd = bnb != null ? sideB * bnb : null;
+    const fomoSideUsd = fomoUsd != null ? sideF * fomoUsd : null;
+    const netB = bnbUsd != null ? bnbUsd * (1 - feeN) : null;
+    const netF = fomoSideUsd != null && keep != null ? fomoSideUsd * keep : null;
+    const netE = earnUsd != null && keep != null ? earnUsd * keep : null;
+    const total = netB != null && netF != null ? netB + netF + (netE || 0) : null;
+
+    out.innerHTML = `<section class="card hero">
+        <p class="lbl">LP 估算价值</p>
+        <p class="big">${usd(value)}</p>
+        <p class="hint">按你在池子中的份额计算，包含 BNB 和 FOMO 两侧，未扣手续费</p>
+        <div class="row"><span>持有 FOMO-LP</span><span>${fmt(num(mine, dec))}</span></div>
+        <div class="row"><span>占总量比例</span><span>${(share * 100).toLocaleString('en-US', {maximumFractionDigits: 4})}%</span></div>
+        <div class="row"><span>折合 BNB</span><span>${fmt(sideB)} BNB（${usd(bnbUsd)}）</span></div>
+        <div class="row"><span>折合 ${esc(f.sym)}</span><span>${fmt(sideF)}（${usd(fomoSideUsd)}）</span></div>
+        <div class="row"><span>待领取挖矿收益</span><span>${earnN == null ? '—' : fmt(earnN) + ' ' + esc(f.sym) + '（' + usd(earnUsd) + '）'}</span></div>
+      </section>
+      <section class="card hero">
+        <p class="lbl">扣除手续费后的参考变现</p>
+        <p class="big">${usd(total)}</p>
+        <p class="hint">在能拿到两侧资产的前提下，按当前公开规则扣税后的上限，未计卖出时的价格冲击</p>
+        <div class="row"><span>BNB 一侧</span><span>${usd(netB)}</span></div>
+        <div class="row"><span>${esc(f.sym)} 一侧（扣卖出税）</span><span>${usd(netF)}</span></div>
+        <div class="row"><span>挖矿收益（扣卖出税）</span><span>${usd(netE)}</span></div>
+      </section>` + pool;
+  } catch (e) {
+    out.innerHTML = '<p class="err">查询失败：' + esc(e.message || e) + '</p><p class="note">可能是网络无法连接 BSC 节点，请稍后重试、换个网络，或展开下方“自定义节点”填写自己的 RPC 地址。</p>';
+  } finally { btn.disabled = false; }
+};
+$('w').addEventListener('keydown', e => { if (e.key === 'Enter') $('go').click(); });
+</script>
+</body>
+</html>
